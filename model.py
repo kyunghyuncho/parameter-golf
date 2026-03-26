@@ -8,13 +8,14 @@ class ResidualGRUBlock(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        self.gru = nn.GRUCell(dim, dim)
-        nn.init.orthogonal_(self.gru.weight_hh)
+        # We use a 1-layer sequence GRU instead of GRUCell to utilize highly optimized cuDNN kernels over the entire sequence at once.
+        self.gru = nn.GRU(dim, dim, num_layers=1, batch_first=True)
+        nn.init.orthogonal_(self.gru.weight_hh_l0)
 
     def forward(self, x: torch.Tensor, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x_norm = self.norm(x)
-        h_next = self.gru(x_norm, h)
-        x_out = x + h_next
+        h_out, h_next = self.gru(x_norm, h)
+        x_out = x + h_out
         return x_out, h_next
 
 class ResidualGRUModel(pl.LightningModule):
@@ -43,30 +44,25 @@ class ResidualGRUModel(pl.LightningModule):
     def forward(self, x: torch.Tensor, h: list[torch.Tensor] | None = None) -> tuple[torch.Tensor, list[torch.Tensor]]:
         # x: (batch_size, seq_len)
         batch_size, seq_len = x.shape
-        x_emb = self.embedding(x) # (B, T, D)
+        x_t = self.embedding(x) # (B, T, D)
         
         if h is None:
-            h = [torch.zeros(batch_size, self.dim, device=x.device, dtype=x_emb.dtype) for _ in range(self.num_layers)]
+            # Sequence GRU expects hidden states of shape (num_layers=1, batch, dim)
+            h = [torch.zeros(1, batch_size, self.dim, device=x.device, dtype=x_t.dtype) for _ in range(self.num_layers)]
 
         h_next = []
-        outputs = []
         
-        # Iterate over sequence
-        # We process token by token or we can optimize if PyTorch supports GRU natively, but since we have residual GRU wrapping GRUCell, we iterate over time.
-        h_current = [hc.clone() for hc in h]
-        for t in range(seq_len):
-            x_t = x_emb[:, t, :]
-            for l in range(self.num_layers):
-                x_t, h_current[l] = self.blocks[l](x_t, h_current[l])
-            outputs.append(x_t)
+        # Iterate over layers (processing the complete sequence dimension simultaneously per block)
+        for l in range(self.num_layers):
+            x_t, h_l_next = self.blocks[l](x_t, h[l])
+            h_next.append(h_l_next)
 
-        out = torch.stack(outputs, dim=1) # (B, T, D)
-        out = self.final_norm(out)
+        out = self.final_norm(x_t) # (B, T, D)
         
         # Tied lm_head
         logits = F.linear(out, self.embedding.weight)
         
-        return logits, h_current
+        return logits, h_next
 
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
