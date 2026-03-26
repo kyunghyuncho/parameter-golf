@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--gradient_clip_val", type=float, default=1.0)
     parser.add_argument("--bptt_steps", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=4096)
+    parser.add_argument("--val_batch_size", type=int, default=131072)
     parser.add_argument("--seq_len", type=int, default=1024)
     parser.add_argument("--data_dir", type=str, default="data/datasets/fineweb10B_sp1024")
     args = parser.parse_args()
@@ -57,6 +58,7 @@ def main():
         data_dir=args.data_dir,
         seq_len=seq_len,
         batch_size=max(1, args.batch_size // seq_len), 
+        val_batch_size=max(1, args.val_batch_size // seq_len),
         num_workers=4
     )
 

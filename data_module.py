@@ -62,11 +62,12 @@ class TokenStreamDataset(IterableDataset):
                 break # only one pass for validation
 
 class FineWebDataModule(pl.LightningDataModule):
-    def __init__(self, data_dir: str, seq_len: int, batch_size: int, num_workers: int = 4):
+    def __init__(self, data_dir: str, seq_len: int, batch_size: int, val_batch_size: int = None, num_workers: int = 4):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.seq_len = seq_len
         self.batch_size = batch_size
+        self.val_batch_size = val_batch_size if val_batch_size is not None else batch_size
         self.num_workers = num_workers
 
     def setup(self, stage=None):
@@ -87,7 +88,7 @@ class FineWebDataModule(pl.LightningDataModule):
         dataset = TokenStreamDataset(f"{self.data_dir}/fineweb_val_*.bin", self.seq_len, is_train=False)
         return DataLoader(
             dataset,
-            batch_size=self.batch_size,
+            batch_size=self.val_batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
