@@ -9,8 +9,8 @@ parameters:
     min: 1e-4
     max: 1e-2
   weight_decay:
-    distribution: uniform
-    min: 0.0
+    distribution: log_uniform_values
+    min: 1e-3
     max: 0.1
   gradient_clip_val:
     distribution: uniform
@@ -21,4 +21,7 @@ parameters:
     values: [128, 256, 512]
   batch_size:
     distribution: categorical
-    values: [4096, 8192, 16384]
+    values: [32768, 65536, 131072]
+  warmup_steps:
+    distribution: categorical
+    values: [100, 200, 500]

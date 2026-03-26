@@ -87,18 +87,22 @@ def main():
     )
     parser.add_argument("--learning_rate", type=float, default=1e-3,
                         help="Peak learning rate for AdamW")
-    parser.add_argument("--weight_decay", type=float, default=0.0,
+    parser.add_argument("--weight_decay", type=float, default=0.01,
                         help="AdamW weight decay coefficient")
     parser.add_argument("--gradient_clip_val", type=float, default=1.0,
                         help="Max gradient norm for clipping")
     parser.add_argument("--bptt_steps", type=int, default=256,
                         help="Truncated BPTT chunk length (tokens)")
-    parser.add_argument("--batch_size", type=int, default=4096,
+    parser.add_argument("--batch_size", type=int, default=65536,
                         help="Training batch size in *tokens* (divided by seq_len for sequences)")
     parser.add_argument("--val_batch_size", type=int, default=131072,
                         help="Validation batch size in *tokens* (can be much larger than train)")
     parser.add_argument("--seq_len", type=int, default=1024,
                         help="Sequence length fed to the model per sample")
+    parser.add_argument("--warmup_steps", type=int, default=200,
+                        help="Number of linear LR warmup steps")
+    parser.add_argument("--total_steps", type=int, default=20000,
+                        help="Total training steps for LR cosine schedule")
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
                         help="Path to the directory containing tokenized shards")
@@ -133,7 +137,9 @@ def main():
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         bptt_steps=args.bptt_steps,
-        gradient_clip_val=args.gradient_clip_val,  # BUG FIX: was previously missing!
+        gradient_clip_val=args.gradient_clip_val,
+        warmup_steps=args.warmup_steps,
+        total_steps=args.total_steps,
     )
 
     # --- Logger ---

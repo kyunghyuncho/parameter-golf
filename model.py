@@ -98,9 +98,11 @@ class ResidualGRUModel(pl.LightningModule):
         dim: int = 256,
         num_layers: int = 20,
         learning_rate: float = 1e-3,
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.01,
         bptt_steps: int = 256,
         gradient_clip_val: float = 1.0,
+        warmup_steps: int = 200,
+        total_steps: int = 20000,
     ):
         super().__init__()
         self.save_hyperparameters()  # Logs all __init__ args to W&B / checkpoints
@@ -112,6 +114,8 @@ class ResidualGRUModel(pl.LightningModule):
         self.weight_decay = weight_decay
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
 
         # --- Model layers ---
 
@@ -185,25 +189,36 @@ class ResidualGRUModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """
-        Implements Truncated Backpropagation Through Time (TBPTT):
+        Implements Truncated Backpropagation Through Time (TBPTT)
+        with gradient accumulation across TBPTT chunks.
 
-        1. Split the full sequence into chunks of `bptt_steps` tokens.
-        2. For each chunk:
-           a. Detach hidden states from the previous chunk's graph
-              (truncates the backward pass to bptt_steps tokens).
-           b. Forward through the model to get logits.
-           c. Compute cross-entropy loss against shifted targets.
-           d. Backward + clip gradients + optimizer step.
-        3. Hidden state *values* are preserved across chunks (only the
-           gradient graph is truncated), so the GRU has full recurrent
-           context up to the current position.
+        Key change vs. naive TBPTT: instead of doing a separate
+        optimizer step per chunk (which multiplies the effective LR
+        by the number of chunks), we ACCUMULATE gradients across all
+        chunks and do a SINGLE optimizer step at the end. This gives
+        the model a stable, well-averaged gradient signal.
+
+        Steps:
+        1. Zero gradients once at the start.
+        2. For each TBPTT chunk:
+           a. Detach hidden states (truncate backward graph).
+           b. Forward → loss → backward (gradients accumulate).
+        3. Clip accumulated gradients.
+        4. Single optimizer step + LR scheduler step.
         """
         opt = self.optimizers()
+        sch = self.lr_schedulers()
         x, y = batch                     # x, y: (B, seq_len)
         batch_size, seq_len = x.shape
 
+        # Count how many TBPTT chunks we'll process (for loss averaging)
+        num_chunks = max(1, (seq_len + self.bptt_steps - 1) // self.bptt_steps)
+
         hidden_state = None
         losses = []
+
+        # Zero gradients ONCE before accumulating across all TBPTT chunks
+        opt.zero_grad()
 
         for i in range(0, seq_len, self.bptt_steps):
             # Slice out the current TBPTT chunk
@@ -218,25 +233,34 @@ class ResidualGRUModel(pl.LightningModule):
             # Forward pass for this chunk
             logits, hidden_state = self(x_chunk, hidden_state)
 
-            # Cross-entropy loss (flatten batch & time dimensions)
+            # Cross-entropy loss, scaled by 1/num_chunks so the accumulated
+            # gradient has the same magnitude as a single full-sequence pass
             loss = F.cross_entropy(
                 logits.reshape(-1, self.vocab_size),  # (B*T_chunk, V)
                 y_chunk.reshape(-1),                   # (B*T_chunk,)
-            )
+            ) / num_chunks
 
-            # Manual optimization: zero → backward → clip → step
-            opt.zero_grad()
+            # Backward — gradients accumulate (no zero_grad here)
             self.manual_backward(loss)
-            # Direct PyTorch grad clipping (Lightning's clip_gradients is
-            # incompatible with fused AdamW under AMP)
-            torch.nn.utils.clip_grad_norm_(self.parameters(), self.gradient_clip_val)
-            opt.step()
 
-            losses.append(loss.detach())
+            losses.append(loss.detach() * num_chunks)  # Undo scaling for logging
+
+        # Single clip + step after all chunks have been accumulated
+        torch.nn.utils.clip_grad_norm_(self.parameters(), self.gradient_clip_val)
+        opt.step()
+
+        # Step the LR scheduler (must be done manually in manual_optimization)
+        if sch is not None:
+            sch.step()
 
         # Log the average loss across all TBPTT chunks in this batch
         avg_loss = torch.stack(losses).mean()
         self.log("train_loss", avg_loss, prog_bar=True)
+
+        # Log current learning rate for monitoring
+        current_lr = opt.param_groups[0]["lr"]
+        self.log("lr", current_lr, prog_bar=True)
+
         return avg_loss
 
     # -------------------------------------------------------------------
@@ -262,17 +286,37 @@ class ResidualGRUModel(pl.LightningModule):
         return val_bpb
 
     # -------------------------------------------------------------------
-    # Optimizer
+    # Optimizer + LR Schedule
     # -------------------------------------------------------------------
 
     def configure_optimizers(self):
-        """AdamW with optional fused CUDA implementation for speed."""
+        """
+        AdamW optimizer with a linear-warmup + cosine-decay LR schedule.
+
+        The warmup prevents early training instability in a 20-layer network.
+        The cosine decay helps the model settle into a sharp minimum before
+        the 10-minute wall-clock limit cuts training off.
+        """
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
-            # Fused AdamW runs the entire update in a single CUDA kernel,
-            # avoiding per-parameter Python overhead.
+            # Fused AdamW runs the entire update in a single CUDA kernel
             fused=torch.cuda.is_available(),
         )
-        return optimizer
+
+        # Linear warmup for warmup_steps, then cosine decay to 0
+        def lr_lambda(step):
+            if step < self.warmup_steps:
+                # Linear warmup: 0 → 1 over warmup_steps
+                return step / max(1, self.warmup_steps)
+            # Cosine decay: 1 → 0 over remaining steps
+            progress = (step - self.warmup_steps) / max(
+                1, self.total_steps - self.warmup_steps
+            )
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+        return [optimizer], [scheduler]
+
