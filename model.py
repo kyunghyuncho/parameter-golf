@@ -33,20 +33,19 @@ import pytorch_lightning as pl
 
 class ResidualGRUBlock(nn.Module):
     """
-    Pre-LayerNorm Residual GRU block.
+    Residual GRU block.
 
     Forward path:
-        1. LayerNorm the input tensor  (stabilizes inputs to the GRU)
-        2. Run through a 1-layer nn.GRU across the full sequence length
-        3. Add the GRU output back to the original input (residual skip)
+        1. Run the input through a 1-layer nn.GRU across the full sequence
+        2. Add the GRU output back to the original input (residual skip)
 
-    The residual connection ensures pristine gradient flow through depth,
-    allowing the network to scale to 20+ layers without vanishing gradients.
+    No normalization layer is used — the GRU's sigmoid/tanh gates
+    inherently bound the hidden state, and gradient clipping handles
+    the residual growth across depth.
     """
 
     def __init__(self, dim: int):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
         # nn.GRU processes the entire (B, T, D) tensor in one cuDNN call,
         # which is orders of magnitude faster than looping with GRUCell.
         self.gru = nn.GRU(dim, dim, num_layers=1, batch_first=True)
@@ -70,8 +69,7 @@ class ResidualGRUBlock(nn.Module):
         x_out : Tensor (B, T, D) — residual-updated features.
         h_next : Tensor (1, B, D) — final hidden state for TBPTT carry.
         """
-        x_norm = self.norm(x)                   # Pre-norm before recurrence
-        h_out, h_next = self.gru(x_norm, h)     # h_out: (B, T, D), h_next: (1, B, D)
+        h_out, h_next = self.gru(x, h)          # h_out: (B, T, D), h_next: (1, B, D)
         x_out = x + h_out                       # Residual addition
         return x_out, h_next
 
@@ -82,14 +80,12 @@ class ResidualGRUBlock(nn.Module):
 
 class ResidualGRUModel(pl.LightningModule):
     """
-    20-layer Pre-Norm Residual GRU language model.
+    20-layer Residual GRU language model (no normalization layers).
 
     Parameter budget (D=256, V=1024, L=20):
       - Tied Embedding:     V × D         = 262,144
-      - Per-block LN:       L × 2D        =  10,240
       - Per-block GRU:      L × (6D²+6D)  = 7,895,040
-      - Final LN:           2D            =     512
-      - Total:              ≈ 8.17M params → 15.6 MB in bf16 ✓
+      - Total:              ≈ 8.16M params → 15.6 MB in bf16 ✓
     """
 
     def __init__(
@@ -122,13 +118,10 @@ class ResidualGRUModel(pl.LightningModule):
         # Embedding table — also reused as the output projection (tied weights)
         self.embedding = nn.Embedding(vocab_size, dim)
 
-        # Stack of 20 Pre-Norm Residual GRU blocks
+        # Stack of 20 Residual GRU blocks (no normalization layers)
         self.blocks = nn.ModuleList(
             [ResidualGRUBlock(dim) for _ in range(num_layers)]
         )
-
-        # Final LayerNorm before projecting to vocabulary logits
-        self.final_norm = nn.LayerNorm(dim)
 
         # We use manual optimization to implement Truncated BPTT correctly.
         # Lightning's automatic optimization doesn't support the per-chunk
@@ -177,9 +170,8 @@ class ResidualGRUModel(pl.LightningModule):
             x_t, h_l_next = self.blocks[l](x_t, h[l])
             h_next.append(h_l_next)
 
-        # Final normalization + tied output projection
-        out = self.final_norm(x_t)                          # (B, T, D)
-        logits = F.linear(out, self.embedding.weight)       # (B, T, V) — tied head
+        # Tied output projection (no final norm)
+        logits = F.linear(x_t, self.embedding.weight)       # (B, T, V) — tied head
 
         return logits, h_next
 
