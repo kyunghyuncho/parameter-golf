@@ -1,7 +1,7 @@
 """
 model.py — Pre-Norm Residual Deep GRU for Parameter Golf
 =========================================================
-Implements a 20-layer residual GRU language model that fits within the
+Implements a 10-layer residual GRU language model that fits within the
 strict 16.00 MB (8,388,608 bfloat16 parameters) artifact limit.
 
 Architecture per layer:
@@ -101,19 +101,20 @@ class ResidualGRUBlock(nn.Module):
 
 class ResidualGRUModel(pl.LightningModule):
     """
-    20-layer Residual GRU language model (no normalization layers).
+    10-layer Residual GRU language model.
 
-    Parameter budget (D=256, V=1024, L=20):
-      - Tied Embedding:     V × D         = 262,144
-      - Per-block GRU:      L × (6D²+6D)  = 7,895,040
+    Parameter budget (D=360, V=1024, L=10):
+      - Tied Embedding:     V × D         = 368,640
+      - Per-block GRU:      L × (6D²+6D)  = 7,797,600
+      - RMSNorm:            D             = 360
       - Total:              ≈ 8.16M params → 15.6 MB in bf16 ✓
     """
 
     def __init__(
         self,
         vocab_size: int = 1024,
-        dim: int = 256,
-        num_layers: int = 20,
+        dim: int = 360,
+        num_layers: int = 10,
         learning_rate: float = 1e-3,
         weight_decay: float = 0.01,
         bptt_steps: int = 256,
@@ -135,13 +136,13 @@ class ResidualGRUModel(pl.LightningModule):
         # Embedding table — also reused as the output projection (tied weights)
         self.embedding = nn.Embedding(vocab_size, dim)
 
-        # Stack of 20 Residual GRU blocks (no normalization layers)
+        # Stack of Residual GRU blocks
         self.blocks = nn.ModuleList(
             [ResidualGRUBlock(dim) for _ in range(num_layers)]
         )
 
         # Final normalization before the tied output head to stabilize logits
-        # (since the residual stream variance grows across 20 layers)
+        # (since the residual stream variance grows across layers)
         self.norm = RMSNorm(dim)
 
         # We use manual optimization to implement Truncated BPTT correctly.
@@ -185,7 +186,7 @@ class ResidualGRUModel(pl.LightningModule):
 
         h_next = []
 
-        # Process through all 20 layers — each layer sees the FULL sequence
+        # Process through all layers — each layer sees the FULL sequence
         # (the cuDNN GRU kernel parallelizes across the time dimension)
         for l in range(self.num_layers):
             x_t, h_l_next = self.blocks[l](x_t, h[l])

@@ -129,8 +129,8 @@ def main():
     # --- Model ---
     model = ResidualGRUModel(
         vocab_size=1024,            # sp1024 tokenizer vocabulary
-        dim=256,                    # Hidden dimension D
-        num_layers=20,              # 20 Residual GRU blocks
+        dim=360,                    # Hidden dimension D
+        num_layers=10,              # 10 Residual GRU blocks
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         bptt_steps=args.bptt_steps,
