@@ -149,7 +149,9 @@ class ResidualGRUModel(pl.LightningModule):
         dim: int = 360,
         num_layers: int = 10,
         learning_rate: float = 1e-3,
-        weight_decay: float = 0.01,
+        weight_decay: float = 0.0,
+        beta1: float = 0.9,
+        beta2: float = 0.999,
         bptt_steps: int = 256,
         gradient_clip_val: float = 1.0,
     ):
@@ -161,6 +163,8 @@ class ResidualGRUModel(pl.LightningModule):
         self.num_layers = num_layers
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.beta1 = beta1
+        self.beta2 = beta2
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
 
@@ -393,6 +397,7 @@ class ResidualGRUModel(pl.LightningModule):
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.learning_rate,
+            betas=(self.beta1, self.beta2),
             weight_decay=self.weight_decay,
             # Fused AdamW runs the entire update in a single CUDA kernel
             fused=torch.cuda.is_available(),

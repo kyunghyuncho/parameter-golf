@@ -87,8 +87,12 @@ def main():
     )
     parser.add_argument("--learning_rate", type=float, default=1e-3,
                         help="Peak learning rate for AdamW")
-    parser.add_argument("--weight_decay", type=float, default=0.01,
+    parser.add_argument("--weight_decay", type=float, default=0.0,
                         help="AdamW weight decay coefficient")
+    parser.add_argument("--beta1", type=float, default=0.9,
+                        help="AdamW beta1")
+    parser.add_argument("--beta2", type=float, default=0.999,
+                        help="AdamW beta2")
     parser.add_argument("--gradient_clip_val", type=float, default=1.0,
                         help="Max gradient norm for clipping")
     parser.add_argument("--bptt_steps", type=int, default=256,
@@ -133,6 +137,8 @@ def main():
         num_layers=10,              # 10 Residual GRU blocks
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        beta1=args.beta1,
+        beta2=args.beta2,
         bptt_steps=args.bptt_steps,
         gradient_clip_val=args.gradient_clip_val,
     )
