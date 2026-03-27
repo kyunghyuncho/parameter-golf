@@ -18,7 +18,7 @@ parameters:
     max: 2.0
   bptt_steps:
     distribution: categorical
-    values: [128, 256, 512]
+    values: [128, 256, 512, 1024, 2048]
   batch_size:
     distribution: categorical
     values: [32768, 65536, 131072]
