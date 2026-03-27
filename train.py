@@ -103,6 +103,8 @@ def main():
                         help="Validation batch size in *tokens* (can be much larger than train)")
     parser.add_argument("--seq_len", type=int, default=1024,
                         help="Sequence length fed to the model per sample")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for initialization (random if None)")
 
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
@@ -116,8 +118,15 @@ def main():
     if seq_len % args.bptt_steps != 0:
         seq_len = (seq_len // args.bptt_steps) * args.bptt_steps
 
-    # Deterministic seeding for reproducibility
-    pl.seed_everything(42)
+    # --- Seeding ---
+    # Randomized by default for sweeps to avoid initialization bias.
+    # If a specific seed is needed for debugging, pass --seed.
+    if args.seed is not None:
+        seed = args.seed
+    else:
+        # Generate a random 32-bit seed using OS entropy
+        seed = int.from_bytes(os.urandom(4), byteorder="little")
+    pl.seed_everything(seed)
 
     # --- Data module ---
     # batch_size and val_batch_size are specified in *tokens* on the CLI,
