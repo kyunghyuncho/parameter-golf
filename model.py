@@ -74,6 +74,9 @@ class ResidualGRUBlock(nn.Module):
         # close to 1, preventing vanishing/exploding gradients over time.
         nn.init.orthogonal_(self.gru.weight_hh_l0)
 
+        # Post-norm layer applied to the residual stream 'x'
+        self.norm = RMSNorm(dim)
+
     def forward(
         self, x: torch.Tensor, h: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -91,7 +94,7 @@ class ResidualGRUBlock(nn.Module):
         h_next : Tensor (1, B, D) — final hidden state for TBPTT carry.
         """
         h_out, h_next = self.gru(x, h)          # h_out: (B, T, D), h_next: (1, B, D)
-        x_out = x + h_out                       # Residual addition
+        x_out = self.norm(x) + h_out            # Post-Norm Residual addition
         return x_out, h_next
 
 
@@ -106,7 +109,8 @@ class ResidualGRUModel(pl.LightningModule):
     Parameter budget (D=360, V=1024, L=10):
       - Tied Embedding:     V × D         = 368,640
       - Per-block GRU:      L × (6D²+6D)  = 7,797,600
-      - RMSNorm:            D             = 360
+      - Per-block norm:     L × D         = 3,600
+      - Final RMSNorm:      D             = 360
       - Total:              ≈ 8.16M params → 15.6 MB in bf16 ✓
     """
 
