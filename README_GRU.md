@@ -1,10 +1,10 @@
 # Pre-Norm Residual Deep GRU for Parameter Golf
 
-This directory implements an ultra-deep (10-layer) Post-RMSNorm Residual GRU trained within the strict limits of the [openai/parameter-golf](https://github.com/openai/parameter-golf) competition. 
+This directory implements an ultra-deep Post-RMSNorm Residual GRU (with configurable shallow, medium, and deep variants) trained within the strict limits of the [openai/parameter-golf](https://github.com/openai/parameter-golf) competition. 
 
 ## Architectural Philosophy
 
-Standard Transformers pay an $O(N^2)$ quadratic attention tax on context length and require heavy MLP blocks to stabilize feature representations. In contrast, this implementation relies entirely on a Recurrent Neural Network (RNN) structure, composed of 20 dense Gated Recurrent Unit (GRU) layers. 
+Standard Transformers pay an $O(N^2)$ quadratic attention tax on context length and require heavy MLP blocks to stabilize feature representations. In contrast, this implementation relies entirely on a Recurrent Neural Network (RNN) structure, composed of up to 20 dense Gated Recurrent Unit (GRU) layers. 
 
 To overcome the traditional vanishing gradient problems that limit standard RNN depth, we implement a **Pre-LayerNorm Residual Design**, heavily inspired by modern Transformer setups. 
 
@@ -14,18 +14,18 @@ For any layer $l$ and timestep $t$, the input features $x_t^{(l)}$ are processed
 2. **Post-Normalization:** $\bar{x}_t^{(l)} = \text{RMSNorm}(x_t^{(l)})$
 3. **Residual Addition:** $x_t^{(l+1)} = \bar{x}_t^{(l)} + h_t^{(l)}$
 
-By retaining a pristine identity shortcut (before the RMSNorm rescale), the network depth can be scaled to 10 layers without shattering gradients. 
+By retaining a pristine identity shortcut (before the RMSNorm rescale), the network depth can be scaled up to 20 layers without shattering gradients. 
 We also apply **Orthogonal Initialization** to the GRU hidden-to-hidden weights to force internal transition eigenvalues close to 1, acting as a secondary gradient stabilization measure.
 
 ### Parameter Budget Constraint ($16.00$ MB)
 The competition strictly enforces a 16.00 MB size limit on the final `submission_model.pt`. To fully saturate this limit in `bfloat16` precision (2 bytes per parameter), we are allowed an absolute maximum of $8,388,608$ parameters.
 
-We utilize the following dimensions:
-- vocabulary size ($V$) = 1024
-- hidden dimension ($D$) = 360
-- number of layers ($L$) = 10
+We configure the depth ($L$) and width ($D$) to fully map the parameter space depending on the chosen architecture:
+- `shallow`: 5 layers, $D = 504$ ($\approx 8.15$M parameters)
+- `medium`: 10 layers, $D = 360$ ($\approx 8.17$M parameters)
+- `deep`: 20 layers, $D = 256$ ($\approx 8.16$M parameters)
 
-**Parameter Breakdown:**
+**Parameter Breakdown Example (`medium` variant):**
 - Tied Embeddings and Output Head: $1024 \times 360 = 368,640$
 - 10 GRU Cells ($6 \times D^2 + 6 \times D$): $10 \times 779,760 = 7,797,600$
 - 10 Post-RMSNorms: $10 \times 360 = 3,600$
