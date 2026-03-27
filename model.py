@@ -28,6 +28,27 @@ import pytorch_lightning as pl
 
 
 # ---------------------------------------------------------------------------
+# Utility Modules
+# ---------------------------------------------------------------------------
+
+class RMSNorm(nn.Module):
+    """
+    Root Mean Square Normalization.
+    Normalizes the variance of the input features and applies a learned scale.
+    Cheaper and often faster than LayerNorm as it doesn't mean-center.
+    """
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, D)
+        norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * norm * self.weight
+
+
+# ---------------------------------------------------------------------------
 # Residual GRU Block — the core repeating unit of the architecture
 # ---------------------------------------------------------------------------
 
@@ -119,6 +140,10 @@ class ResidualGRUModel(pl.LightningModule):
             [ResidualGRUBlock(dim) for _ in range(num_layers)]
         )
 
+        # Final normalization before the tied output head to stabilize logits
+        # (since the residual stream variance grows across 20 layers)
+        self.norm = RMSNorm(dim)
+
         # We use manual optimization to implement Truncated BPTT correctly.
         # Lightning's automatic optimization doesn't support the per-chunk
         # backward / step pattern that TBPTT requires.
@@ -166,7 +191,8 @@ class ResidualGRUModel(pl.LightningModule):
             x_t, h_l_next = self.blocks[l](x_t, h[l])
             h_next.append(h_l_next)
 
-        # Tied output projection (no final norm)
+        # Tied output projection
+        x_t = self.norm(x_t)
         logits = F.linear(x_t, self.embedding.weight)       # (B, T, V) — tied head
 
         return logits, h_next
