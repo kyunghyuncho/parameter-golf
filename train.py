@@ -99,10 +99,7 @@ def main():
                         help="Validation batch size in *tokens* (can be much larger than train)")
     parser.add_argument("--seq_len", type=int, default=1024,
                         help="Sequence length fed to the model per sample")
-    parser.add_argument("--warmup_steps", type=int, default=200,
-                        help="Number of linear LR warmup steps")
-    parser.add_argument("--total_steps", type=int, default=20000,
-                        help="Total training steps for LR cosine schedule")
+
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
                         help="Path to the directory containing tokenized shards")
@@ -138,8 +135,6 @@ def main():
         weight_decay=args.weight_decay,
         bptt_steps=args.bptt_steps,
         gradient_clip_val=args.gradient_clip_val,
-        warmup_steps=args.warmup_steps,
-        total_steps=args.total_steps,
     )
 
     # --- Logger ---

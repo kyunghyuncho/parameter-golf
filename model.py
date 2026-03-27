@@ -97,8 +97,6 @@ class ResidualGRUModel(pl.LightningModule):
         weight_decay: float = 0.01,
         bptt_steps: int = 256,
         gradient_clip_val: float = 1.0,
-        warmup_steps: int = 200,
-        total_steps: int = 20000,
     ):
         super().__init__()
         self.save_hyperparameters()  # Logs all __init__ args to W&B / checkpoints
@@ -110,8 +108,6 @@ class ResidualGRUModel(pl.LightningModule):
         self.weight_decay = weight_decay
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
-        self.warmup_steps = warmup_steps
-        self.total_steps = total_steps
 
         # --- Model layers ---
 
@@ -199,7 +195,6 @@ class ResidualGRUModel(pl.LightningModule):
         4. Single optimizer step + LR scheduler step.
         """
         opt = self.optimizers()
-        sch = self.lr_schedulers()
         x, y = batch                     # x, y: (B, seq_len)
         batch_size, seq_len = x.shape
 
@@ -241,9 +236,7 @@ class ResidualGRUModel(pl.LightningModule):
         torch.nn.utils.clip_grad_norm_(self.parameters(), self.gradient_clip_val)
         opt.step()
 
-        # Step the LR scheduler (must be done manually in manual_optimization)
-        if sch is not None:
-            sch.step()
+
 
         # Log the average loss across all TBPTT chunks in this batch
         avg_loss = torch.stack(losses).mean()
@@ -283,11 +276,11 @@ class ResidualGRUModel(pl.LightningModule):
 
     def configure_optimizers(self):
         """
-        AdamW optimizer with a linear-warmup + cosine-decay LR schedule.
+        AdamW optimizer with a fixed learning rate.
 
-        The warmup prevents early training instability in a 20-layer network.
-        The cosine decay helps the model settle into a sharp minimum before
-        the 10-minute wall-clock limit cuts training off.
+        GRU's sigmoid/tanh gates and orthogonal W_hh init provide inherent
+        stability, so warmup is unnecessary. Fixed LR maximizes use of the
+        limited ~900-step training budget under the 10-min wall-clock cap.
         """
         optimizer = torch.optim.AdamW(
             self.parameters(),
@@ -297,18 +290,5 @@ class ResidualGRUModel(pl.LightningModule):
             fused=torch.cuda.is_available(),
         )
 
-        # Linear warmup for warmup_steps, then cosine decay to 0
-        def lr_lambda(step):
-            if step < self.warmup_steps:
-                # Linear warmup: 0 → 1 over warmup_steps
-                return step / max(1, self.warmup_steps)
-            # Cosine decay: 1 → 0 over remaining steps
-            progress = (step - self.warmup_steps) / max(
-                1, self.total_steps - self.warmup_steps
-            )
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-        return [optimizer], [scheduler]
+        return optimizer
 
