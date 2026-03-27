@@ -1,6 +1,6 @@
 # Pre-Norm Residual Deep GRU for Parameter Golf
 
-This directory implements an ultra-deep (20-layer) Pre-LayerNorm Residual GRU trained within the strict limits of the [openai/parameter-golf](https://github.com/openai/parameter-golf) competition. 
+This directory implements an ultra-deep (10-layer) Post-RMSNorm Residual GRU trained within the strict limits of the [openai/parameter-golf](https://github.com/openai/parameter-golf) competition. 
 
 ## Architectural Philosophy
 
@@ -10,11 +10,11 @@ To overcome the traditional vanishing gradient problems that limit standard RNN 
 
 ### The Residual GRU Block
 For any layer $l$ and timestep $t$, the input features $x_t^{(l)}$ are processed via:
-1. **Pre-Normalization:** $\bar{x}_t^{(l)} = \text{LayerNorm}(x_t^{(l)})$
-2. **Recurrence:** $h_t^{(l)} = \text{GRUCell}^{(l)}(\bar{x}_t^{(l)}, h_{t-1}^{(l)})$
-3. **Residual Addition:** $x_t^{(l+1)} = x_t^{(l)} + h_t^{(l)}$
+1. **Recurrence:** $h_t^{(l)} = \text{GRUCell}^{(l)}(x_t^{(l)}, h_{t-1}^{(l)})$
+2. **Post-Normalization:** $\bar{x}_t^{(l)} = \text{RMSNorm}(x_t^{(l)})$
+3. **Residual Addition:** $x_t^{(l+1)} = \bar{x}_t^{(l)} + h_t^{(l)}$
 
-By retaining a pristine identity shortcut $x_t^{(l+1)} = x_t^{(l)} + \text{updates}$, the network depth can be scaled gracefully up to 20 layers while keeping gradients completely healthy. 
+By retaining a pristine identity shortcut (before the RMSNorm rescale), the network depth can be scaled to 10 layers without shattering gradients. 
 We also apply **Orthogonal Initialization** to the GRU hidden-to-hidden weights to force internal transition eigenvalues close to 1, acting as a secondary gradient stabilization measure.
 
 ### Parameter Budget Constraint ($16.00$ MB)
@@ -22,14 +22,14 @@ The competition strictly enforces a 16.00 MB size limit on the final `submission
 
 We utilize the following dimensions:
 - vocabulary size ($V$) = 1024
-- hidden dimension ($D$) = 256
-- number of layers ($L$) = 20
+- hidden dimension ($D$) = 360
+- number of layers ($L$) = 10
 
 **Parameter Breakdown:**
-- Tied Embeddings and Output Head: $1024 \times 256 = 262,144$
-- 20 LayerNorms: $20 \times (2 \times 256) = 10,240$
-- 20 GRU Cells ($6 \times D^2 + 6 \times D$): $20 \times 394,752 = 7,895,040$
-- Global LayerNorm: $2 \times 256 = 512$
+- Tied Embeddings and Output Head: $1024 \times 360 = 368,640$
+- 10 GRU Cells ($6 \times D^2 + 6 \times D$): $10 \times 779,760 = 7,797,600$
+- 10 Post-RMSNorms: $10 \times 360 = 3,600$
+- Final Output RMSNorm: $360$
 - **Total:** $\approx 8.16 \text{M parameters}$ (weighing exactly $15.6 \text{ MB}$, perfectly compliant!)
 
 
@@ -78,3 +78,10 @@ We leverage W&B's Bayesian Optimization sweeps defined in `sweep.yaml` to search
    ```
 
 *(Wait 10 minutes, and the orchestrator outputs your best Loss and Artifact to WandB!)*
+
+## Attribution & License
+
+This project is a fork of the OpenAI Parameter Golf challenge. 
+Original Parameter Golf codebase (data processing, evaluation loops, `train_gpt.py`) is Copyright (c) 2026 OpenAI. 
+
+The Custom Residual GRU model architecture (`model.py`), continuous TBPTT training loop (`train.py`), hyperparameter sweeps, and `README_GRU.md` are Copyright (c) 2026 Kyunghyun Cho, licensed under the MIT License.
