@@ -1,7 +1,7 @@
 """
 model.py — Pre-Norm Residual Deep GRU for Parameter Golf
 =========================================================
-Implements a 10-layer residual GRU language model that fits within the
+Implements a configurable residual GRU language model that fits within the
 strict 16.00 MB (8,388,608 bfloat16 parameters) artifact limit.
 
 Architecture per layer:
@@ -133,9 +133,9 @@ class ResidualGRUBlock(nn.Module):
 
 class ResidualGRUModel(pl.LightningModule):
     """
-    10-layer Residual GRU language model.
+    Residual GRU language model.
 
-    Parameter budget (D=360, V=1024, L=10):
+    Parameter budget example for medium architecture (D=360, V=1024, L=10):
       - Tied Embedding:     V × D         = 368,640
       - Per-block GRU:      L × (6D²+6D)  = 7,797,600
       - Per-block norm:     L × D         = 3,600

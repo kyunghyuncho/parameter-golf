@@ -4,7 +4,7 @@ train.py — Training launcher for the Residual GRU Parameter Golf entry
 Orchestrates:
   1. CLI argument parsing (compatible with W&B Sweep agent injection)
   2. Data module initialization (with separate train / val batch sizes)
-  3. Model construction (20-layer Residual GRU, 8.2M params)
+  3. Model construction (Residual GRU with configurable architecture, ~8.2M params)
   4. Lightning Trainer with a hard 9 min 45 s wall-clock cap
   5. Post-training artifact export to bfloat16 ≤ 16.00 MB
 
@@ -106,6 +106,10 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for initialization (random if None)")
 
+    parser.add_argument("--architecture", type=str, default="medium",
+                        choices=["shallow", "medium", "deep"],
+                        help="Model architecture variant (controls depth and width)")
+
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
                         help="Path to the directory containing tokenized shards")
@@ -139,11 +143,19 @@ def main():
         num_workers=4,
     )
 
+    # --- Map architecture to num_layers and dim ---
+    if args.architecture == "shallow":
+        num_layers, dim = 5, 504
+    elif args.architecture == "deep":
+        num_layers, dim = 20, 256
+    else:  # "medium"
+        num_layers, dim = 10, 360
+
     # --- Model ---
     model = ResidualGRUModel(
         vocab_size=1024,            # sp1024 tokenizer vocabulary
-        dim=360,                    # Hidden dimension D
-        num_layers=10,              # 10 Residual GRU blocks
+        dim=dim,                    # Hidden dimension D
+        num_layers=num_layers,      # Residual GRU blocks
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         beta1=args.beta1,
