@@ -232,11 +232,15 @@ class ResidualGRUModel(pl.LightningModule):
 
             losses.append(loss.detach() * num_chunks)  # Undo scaling for logging
 
+            # Early exit on NaN — no point continuing a diverged run
+            if torch.isnan(loss):
+                self.log("train_loss", float("inf"), prog_bar=True)
+                self.trainer.should_stop = True
+                return torch.tensor(float("inf"))
+
         # Single clip + step after all chunks have been accumulated
         torch.nn.utils.clip_grad_norm_(self.parameters(), self.gradient_clip_val)
         opt.step()
-
-
 
         # Log the average loss across all TBPTT chunks in this batch
         avg_loss = torch.stack(losses).mean()
