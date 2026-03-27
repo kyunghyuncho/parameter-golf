@@ -21,6 +21,8 @@ Key design decisions:
 
 import math
 
+import numpy as np
+import sentencepiece as spm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,6 +48,33 @@ class RMSNorm(nn.Module):
         # x: (B, T, D)
         norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return x * norm * self.weight
+
+
+# ---------------------------------------------------------------------------
+# Token-to-Byte Lookup Tables (from train_gpt.py)
+# ---------------------------------------------------------------------------
+
+def build_sentencepiece_luts(
+    sp: spm.SentencePieceProcessor, vocab_size: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    sp_vocab_size = int(sp.vocab_size())
+    table_size = max(sp_vocab_size, vocab_size)
+    base_bytes_np = np.zeros((table_size,), dtype=np.int16)
+    has_leading_space_np = np.zeros((table_size,), dtype=np.bool_)
+    is_boundary_token_np = np.ones((table_size,), dtype=np.bool_)
+    for token_id in range(sp_vocab_size):
+        if sp.is_control(token_id) or sp.is_unknown(token_id) or sp.is_unused(token_id):
+            continue
+        is_boundary_token_np[token_id] = False
+        if sp.is_byte(token_id):
+            base_bytes_np[token_id] = 1
+            continue
+        piece = sp.id_to_piece(token_id)
+        if piece.startswith("▁"):
+            has_leading_space_np[token_id] = True
+            piece = piece[1:]
+        base_bytes_np[token_id] = len(piece.encode("utf-8"))
+    return base_bytes_np, has_leading_space_np, is_boundary_token_np
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +163,17 @@ class ResidualGRUModel(pl.LightningModule):
         self.weight_decay = weight_decay
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
+
+        # --- Tokenizer & Metrics Computations ---
+        # Build the exact token-to-byte lookup tables used for official val_bpb
+        sp = spm.SentencePieceProcessor("./data/tokenizers/fineweb_1024_bpe.model")
+        base_bytes, has_leading_space, is_boundary_token = build_sentencepiece_luts(
+            sp, vocab_size
+        )
+        # Register as buffers so model.to(device) moves them automatically
+        self.register_buffer("base_bytes_lut", torch.tensor(base_bytes, dtype=torch.int16))
+        self.register_buffer("has_leading_space_lut", torch.tensor(has_leading_space, dtype=torch.bool))
+        self.register_buffer("is_boundary_token_lut", torch.tensor(is_boundary_token, dtype=torch.bool))
 
         # --- Model layers ---
 
@@ -287,23 +327,56 @@ class ResidualGRUModel(pl.LightningModule):
     # Validation (no TBPTT needed — runs under inference_mode)
     # -------------------------------------------------------------------
 
+    def on_validation_epoch_start(self):
+        self.val_loss_sum = 0.0
+        self.val_token_count = 0.0
+        self.val_byte_count = 0.0
+
     def validation_step(self, batch, batch_idx):
         """
-        Standard single-pass validation.  No TBPTT splitting is needed
-        because there is no backward pass, so memory is not a concern.
+        Standard single-pass validation. Computes exact bits-per-byte exactly
+        as the official train_gpt.py script does.
         """
         x, y = batch
         logits, _ = self(x)
         loss = F.cross_entropy(
             logits.reshape(-1, self.vocab_size),
             y.reshape(-1),
+            reduction="mean",
         )
 
-        # Convert nats → bits: bpb = loss_nats / ln(2)
-        val_bpb = loss / math.log(2)
-        self.log("val_loss", loss, sync_dist=True)
+        batch_token_count = float(y.numel())
+        self.val_loss_sum += float(loss.item()) * batch_token_count
+        self.val_token_count += batch_token_count
+
+        # Exact token-to-byte count logic from `train_gpt.py`
+        prev_ids = x.reshape(-1)
+        tgt_ids = y.reshape(-1)
+        token_bytes = self.base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+        token_bytes += (self.has_leading_space_lut[tgt_ids] & ~self.is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+        self.val_byte_count += float(token_bytes.to(torch.float64).sum().item())
+
+    def on_validation_epoch_end(self):
+        # Sync metrics across GPUs if using DDP (single GPU in param golf normally)
+        if self.trainer.world_size > 1:
+            metrics = torch.tensor(
+                [self.val_loss_sum, self.val_token_count, self.val_byte_count],
+                device=self.device,
+            )
+            torch.distributed.all_reduce(metrics, op=torch.distributed.ReduceOp.SUM)
+            val_loss_sum, val_token_count, val_byte_count = metrics.tolist()
+        else:
+            val_loss_sum = self.val_loss_sum
+            val_token_count = self.val_token_count
+            val_byte_count = self.val_byte_count
+
+        val_loss = val_loss_sum / val_token_count
+        bits_per_token = val_loss / math.log(2.0)
+        tokens_per_byte = val_token_count / val_byte_count
+        val_bpb = bits_per_token * tokens_per_byte
+
+        self.log("val_loss", val_loss, sync_dist=True)
         self.log("val_bpb", val_bpb, sync_dist=True, prog_bar=True)
-        return val_bpb
 
     # -------------------------------------------------------------------
     # Optimizer + LR Schedule
