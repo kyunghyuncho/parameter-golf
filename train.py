@@ -44,9 +44,10 @@ class ArtifactExportCallback(Callback):
       4. Assert file size ≤ max_size_bytes (16,777,216 = 16.00 MB).
     """
 
-    def __init__(self, filepath: str = "submission_model.pt", max_size_bytes: int = 16_777_216):
+    def __init__(self, filepath: str = "submission_model.pt", max_size_bytes: int = 16_777_216, export_fp8: bool = False):
         self.filepath = filepath
         self.max_size_bytes = max_size_bytes
+        self.export_fp8 = export_fp8
 
     def on_train_end(self, trainer, pl_module):
         # Only rank-0 saves in distributed training to avoid file corruption
@@ -58,13 +59,9 @@ class ArtifactExportCallback(Callback):
         # state_dict() contains only model weights — no optimizer buffers
         state_dict = pl_module.state_dict()
 
-        # Calculate total params to determine if we must export in FP8
-        num_params = sum(p.numel() for p in state_dict.values())
-        export_fp8 = num_params > 8_388_600
-
         # Downcast every parameter to bfloat16 or float8 on CPU for minimal file size
         for k, v in state_dict.items():
-            if export_fp8:
+            if self.export_fp8:
                 state_dict[k] = v.cpu().to(torch.float8_e5m2)
             else:
                 state_dict[k] = v.cpu().to(torch.bfloat16)
@@ -118,6 +115,8 @@ def main():
                         help="Model architecture variant (controls depth and width)")
     parser.add_argument("--use_qat", type=lambda x: str(x).lower() in ['true', '1', 'yes'], default=False,
                         help="Enable Quantization-Aware Training (FP8) on the GRU/Embeddings")
+    parser.add_argument("--use_post_rmsnorm", type=lambda x: str(x).lower() in ['true', '1', 'yes'], default=False,
+                        help="Enable post-RMSNorm on the residual stream before the addition")
 
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
@@ -162,6 +161,11 @@ def main():
     else:  # "medium"
         num_layers, dim = 10, 360
 
+    export_fp8 = args.architecture.startswith("fp8")
+    if not export_fp8:
+        # QAT is only valid when using FP8 parameters
+        args.use_qat = False
+
     # --- Model ---
     model = ResidualGRUModel(
         vocab_size=1024,            # sp1024 tokenizer vocabulary
@@ -174,6 +178,7 @@ def main():
         bptt_steps=args.bptt_steps,
         gradient_clip_val=args.gradient_clip_val,
         use_qat=args.use_qat,
+        use_post_rmsnorm=args.use_post_rmsnorm,
     )
 
     # --- Logger ---
@@ -187,7 +192,7 @@ def main():
         precision="bf16-mixed",         # AMP with bfloat16 for maximum throughput
         logger=wandb_logger,
         enable_checkpointing=False,     # We handle export via our custom callback
-        callbacks=[ArtifactExportCallback(filepath="submission_model.pt")],
+        callbacks=[ArtifactExportCallback(filepath="submission_model.pt", export_fp8=export_fp8)],
     )
 
     # --- Launch training ---

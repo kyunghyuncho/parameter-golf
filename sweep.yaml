@@ -35,7 +35,10 @@ parameters:
     distribution: categorical
     # values: ["shallow", "medium", "deep", "fp8_medium"]
     # remove "shallow", "medium" and "deep" in bf16, since we ran them already.
-    values: ["fp8_medium"]
+    values: ["medium", "fp8_medium"]
   use_qat:
+    distribution: categorical
+    values: [true, false]
+  use_post_rmsnorm:
     distribution: categorical
     values: [true, false]

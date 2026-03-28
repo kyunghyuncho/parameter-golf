@@ -11,7 +11,7 @@ To overcome the traditional vanishing gradient problems that limit standard RNN 
 ### The Residual GRU Block
 For any layer $l$ and timestep $t$, the input features $x_t^{(l)}$ are processed via:
 1. **Recurrence:** $h_t^{(l)} = \text{GRUCell}^{(l)}(x_t^{(l)}, h_{t-1}^{(l)})$
-2. **Post-Normalization:** $\bar{x}_t^{(l)} = \text{RMSNorm}(x_t^{(l)})$
+2. **Post-Normalization (Optional):** $\bar{x}_t^{(l)} = \text{RMSNorm}(x_t^{(l)})$ (controlled via `--use_post_rmsnorm`)
 3. **Residual Addition:** $x_t^{(l+1)} = \bar{x}_t^{(l)} + h_t^{(l)}$
 
 By retaining a pristine identity shortcut (before the RMSNorm rescale), the network depth can be scaled up to 20 layers without shattering gradients. 
@@ -57,7 +57,7 @@ Because our artifact must be compliant at the moment of evaluation, we use a cus
 ## Launching a Training Sweep
 
 Since training lasts precisely 9 minutes and 45 seconds, evaluating hyperparameters is fast. 
-We leverage W&B's Bayesian Optimization sweeps defined in `sweep.yaml` to search for optimal learning rates, batch sizes, and gradient clip boundaries.
+We leverage W&B's Bayesian Optimization sweeps defined in `sweep.yaml` to search for optimal learning rates, batch sizes, and gradient clip boundaries. We also tune boolean flags like `use_post_rmsnorm` and `use_qat` (the latter exclusively for FP8 models).
 
 1. **Activate the environment:**
    ```bash

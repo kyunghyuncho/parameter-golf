@@ -94,8 +94,9 @@ class ResidualGRUBlock(nn.Module):
     the residual growth across depth.
     """
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, use_post_rmsnorm: bool = False):
         super().__init__()
+        self.use_post_rmsnorm = use_post_rmsnorm
         # nn.GRU processes the entire (B, T, D) tensor in one cuDNN call,
         # which is orders of magnitude faster than looping with GRUCell.
         self.gru = nn.GRU(dim, dim, num_layers=1, batch_first=True)
@@ -104,7 +105,8 @@ class ResidualGRUBlock(nn.Module):
         nn.init.orthogonal_(self.gru.weight_hh_l0)
 
         # Post-norm layer applied to the residual stream 'x'
-        self.norm = RMSNorm(dim)
+        if self.use_post_rmsnorm:
+            self.norm = RMSNorm(dim)
 
     def forward(
         self, x: torch.Tensor, h: torch.Tensor, use_qat: bool = False
@@ -133,7 +135,8 @@ class ResidualGRUBlock(nn.Module):
         else:
             h_out, h_next = self.gru(x, h)          # h_out: (B, T, D), h_next: (1, B, D)
         
-        x_out = self.norm(x) + h_out            # Post-Norm Residual addition
+        x_bar = self.norm(x) if self.use_post_rmsnorm else x
+        x_out = x_bar + h_out
         return x_out, h_next
 
 
@@ -165,6 +168,7 @@ class ResidualGRUModel(pl.LightningModule):
         bptt_steps: int = 256,
         gradient_clip_val: float = 1.0,
         use_qat: bool = False,
+        use_post_rmsnorm: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()  # Logs all __init__ args to W&B / checkpoints
@@ -179,6 +183,7 @@ class ResidualGRUModel(pl.LightningModule):
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
         self.use_qat = use_qat
+        self.use_post_rmsnorm = use_post_rmsnorm
 
         # --- Tokenizer & Metrics Computations ---
         # Build the exact token-to-byte lookup tables used for official val_bpb
@@ -198,7 +203,7 @@ class ResidualGRUModel(pl.LightningModule):
 
         # Stack of Residual GRU blocks
         self.blocks = nn.ModuleList(
-            [ResidualGRUBlock(dim) for _ in range(num_layers)]
+            [ResidualGRUBlock(dim, use_post_rmsnorm) for _ in range(num_layers)]
         )
 
         # Final normalization before the tied output head to stabilize logits
