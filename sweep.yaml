@@ -12,12 +12,19 @@ parameters:
     distribution: categorical
     values: [0.8, 0.85, 0.9, 0.92, 0.95, 0.98, 0.99]
   beta2:
-    distribution: categorical
-    values: [0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 0.9999]
-  gradient_clip_val:
+    # distribution: categorical
+    # values: [0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.999, 0.9999]
     distribution: uniform
-    min: 0.1
-    max: 2.0
+    min: 0.5
+    max: 0.99
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-1
+  gradient_clip_val:
+    distribution: log_uniform_values
+    min: 1e-1
+    max: 2
   bptt_steps:
     distribution: categorical
     values: [128, 256, 512, 1024, 2048]
