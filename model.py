@@ -107,7 +107,7 @@ class ResidualGRUBlock(nn.Module):
         self.norm = RMSNorm(dim)
 
     def forward(
-        self, x: torch.Tensor, h: torch.Tensor
+        self, x: torch.Tensor, h: torch.Tensor, use_qat: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Parameters
@@ -122,7 +122,17 @@ class ResidualGRUBlock(nn.Module):
         x_out : Tensor (B, T, D) — residual-updated features.
         h_next : Tensor (1, B, D) — final hidden state for TBPTT carry.
         """
-        h_out, h_next = self.gru(x, h)          # h_out: (B, T, D), h_next: (1, B, D)
+        if use_qat:
+            from torch.func import functional_call
+            params = dict(self.gru.named_parameters())
+            qat_params = {}
+            for k, v in params.items():
+                q_v = v.to(torch.float8_e5m2).to(v.dtype)
+                qat_params[k] = v + (q_v - v).detach()
+            h_out, h_next = functional_call(self.gru, qat_params, (x, h))
+        else:
+            h_out, h_next = self.gru(x, h)          # h_out: (B, T, D), h_next: (1, B, D)
+        
         x_out = self.norm(x) + h_out            # Post-Norm Residual addition
         return x_out, h_next
 
@@ -154,6 +164,7 @@ class ResidualGRUModel(pl.LightningModule):
         beta2: float = 0.999,
         bptt_steps: int = 256,
         gradient_clip_val: float = 1.0,
+        use_qat: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()  # Logs all __init__ args to W&B / checkpoints
@@ -167,6 +178,7 @@ class ResidualGRUModel(pl.LightningModule):
         self.beta2 = beta2
         self.bptt_steps = bptt_steps
         self.gradient_clip_val = gradient_clip_val
+        self.use_qat = use_qat
 
         # --- Tokenizer & Metrics Computations ---
         # Build the exact token-to-byte lookup tables used for official val_bpb
@@ -221,8 +233,13 @@ class ResidualGRUModel(pl.LightningModule):
         """
         batch_size, seq_len = x.shape
 
+        embed_weight = self.embedding.weight
+        if self.use_qat:
+            q_w = embed_weight.to(torch.float8_e5m2).to(embed_weight.dtype)
+            embed_weight = embed_weight + (q_w - embed_weight).detach()
+
         # Token embedding: (B, T) → (B, T, D)
-        x_t = self.embedding(x)
+        x_t = F.embedding(x, embed_weight)
 
         # Initialize hidden states to zeros if this is the first chunk
         if h is None:
@@ -237,12 +254,12 @@ class ResidualGRUModel(pl.LightningModule):
         # Process through all layers — each layer sees the FULL sequence
         # (the cuDNN GRU kernel parallelizes across the time dimension)
         for l in range(self.num_layers):
-            x_t, h_l_next = self.blocks[l](x_t, h[l])
+            x_t, h_l_next = self.blocks[l](x_t, h[l], self.use_qat)
             h_next.append(h_l_next)
 
         # Tied output projection
         x_t = self.norm(x_t)
-        logits = F.linear(x_t, self.embedding.weight)       # (B, T, V) — tied head
+        logits = F.linear(x_t, embed_weight)       # (B, T, V) — tied head
 
         return logits, h_next
 

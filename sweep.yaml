@@ -26,4 +26,9 @@ parameters:
     values: [32768, 65536, 131072, 262144, 524288, 1048576, 2097152]
   architecture:
     distribution: categorical
-    values: ["shallow", "medium", "deep"]
+    # values: ["shallow", "medium", "deep", "fp8_medium"]
+    # remove "shallow", "medium" and "deep" in bf16, since we ran them already.
+    values: ["fp8_medium"]
+  use_qat:
+    distribution: categorical
+    values: [true, false]

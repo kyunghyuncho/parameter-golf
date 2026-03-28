@@ -58,9 +58,16 @@ class ArtifactExportCallback(Callback):
         # state_dict() contains only model weights — no optimizer buffers
         state_dict = pl_module.state_dict()
 
-        # Downcast every parameter to bfloat16 on CPU for minimal file size
+        # Calculate total params to determine if we must export in FP8
+        num_params = sum(p.numel() for p in state_dict.values())
+        export_fp8 = num_params > 8_388_600
+
+        # Downcast every parameter to bfloat16 or float8 on CPU for minimal file size
         for k, v in state_dict.items():
-            state_dict[k] = v.cpu().to(torch.bfloat16)
+            if export_fp8:
+                state_dict[k] = v.cpu().to(torch.float8_e5m2)
+            else:
+                state_dict[k] = v.cpu().to(torch.bfloat16)
 
         torch.save(state_dict, self.filepath)
 
@@ -107,8 +114,10 @@ def main():
                         help="Random seed for initialization (random if None)")
 
     parser.add_argument("--architecture", type=str, default="medium",
-                        choices=["shallow", "medium", "deep"],
+                        choices=["shallow", "medium", "deep", "fp8_medium"],
                         help="Model architecture variant (controls depth and width)")
+    parser.add_argument("--use_qat", type=lambda x: str(x).lower() in ['true', '1', 'yes'], default=False,
+                        help="Enable Quantization-Aware Training (FP8) on the GRU/Embeddings")
 
     parser.add_argument("--data_dir", type=str,
                         default="data/datasets/fineweb10B_sp1024",
@@ -148,6 +157,8 @@ def main():
         num_layers, dim = 5, 504
     elif args.architecture == "deep":
         num_layers, dim = 20, 256
+    elif args.architecture == "fp8_medium":
+        num_layers, dim = 10, 512
     else:  # "medium"
         num_layers, dim = 10, 360
 
@@ -162,6 +173,7 @@ def main():
         beta2=args.beta2,
         bptt_steps=args.bptt_steps,
         gradient_clip_val=args.gradient_clip_val,
+        use_qat=args.use_qat,
     )
 
     # --- Logger ---
@@ -180,6 +192,24 @@ def main():
 
     # --- Launch training ---
     trainer.fit(model, datamodule=data_module)
+
+    # --- Final Authentic Evaluation ---
+    # Reload the exact quantized artifact to ensure the final tracked val_bpb 
+    # reflects the true float8 loss correctly.
+    if trainer.is_global_zero and os.path.exists("submission_model.pt"):
+        print("Reloading saved submission artifact for final authentic validation...")
+        
+        exported_state = torch.load("submission_model.pt", map_location=model.device, weights_only=True)
+        
+        # Upcast exported float8 weights back to bfloat16 natively to evaluate
+        for k, v in exported_state.items():
+            exported_state[k] = v.to(torch.bfloat16)
+            
+        # Disable QAT simulation, as the loaded weights are already hard-quantized
+        model.use_qat = False 
+        model.load_state_dict(exported_state)
+        
+        trainer.validate(model, datamodule=data_module)
 
 
 if __name__ == "__main__":
